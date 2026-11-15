@@ -7,11 +7,13 @@ import type { ModelSettings, PredictionState } from "../contract.ts";
 
 const source = makeThreadResponse({ id: "source", providerId: "codex", environmentId: "environment" });
 const worker = makeThreadResponse({ id: "worker", visibility: "hidden", title: "Composer prediction helper", originPluginId: "composer-predictions" });
-function fixture(options: { pendingInteraction?: boolean; abandoned?: boolean } = {}) {
+function fixture(options: { pendingInteraction?: boolean; abandoned?: boolean; allowUnattendedHelpers?: boolean } = {}) {
   const operations: string[] = [];
   const metadata = new Map<string, Record<string, unknown>>();
   let spawned = 0;
-  const host = createFakePluginHost({ pluginId: "composer-predictions", sdk: {
+  const host = createFakePluginHost({ pluginId: "composer-predictions",
+    settings: options.allowUnattendedHelpers === true ? { allowUnattendedHelpers: true } : undefined,
+    sdk: {
     threads: {
       get: async ({ threadId }) => threadId === "source" ? source : { ...worker, id: threadId },
       list: async () => options.abandoned ? [worker, { ...worker, id: "unmarked" }, { ...worker, id: "visible", visibility: "visible" }, { ...worker, id: "foreign", originPluginId: "other" }] : [],
@@ -584,6 +586,30 @@ test("settings model discovery skips unavailable and full-access-only providers"
     assert.deepEqual(harness.inspection.sdk.callsTo("providers.models"), [[{ providerId: "claude-code" }]]);
   } finally { await harness.lifecycle.dispose(); }
 });
+test("with allowUnattendedHelpers, discovery still skips providers with no permission modes", async () => {
+  const { bb, harness } = fixture({ allowUnattendedHelpers: true });
+  const pi = { id: "pi", available: true, capabilities: { permissionModes: ["full"] } };
+  const piModel = { providerId: "pi", model: "pi-model", reasoningLevel: "low" };
+  harness.sdk.stub("providers.list", async () => [
+    { id: "none", available: true, capabilities: { permissionModes: [] } },
+    pi,
+  ]);
+  harness.sdk.stub("providers.models", async ({ providerId }) => ({
+    providers: [providerId === "pi" ? pi : { id: providerId, available: true, capabilities: { permissionModes: [] } }],
+    models: providerId === "pi"
+      ? [{ id: "pi-model", model: "pi-model", defaultReasoningEffort: "low", supportedReasoningEfforts: [{ reasoningEffort: "low" }], isDefault: true }]
+      : [],
+    modelLoadError: null,
+  }));
+  try {
+    await loadPlugin(bb, harness);
+    const settings = await harness.behavior.callRpc("model_get", {}) as ModelSettings;
+    assert.deepEqual(settings, { selection: null, pickerDefault: piModel, catalogError: null });
+    assert.deepEqual(harness.inspection.sdk.callsTo("providers.models"), [[{ providerId: "pi" }]],
+      "discovery must not query the empty-mode provider at all");
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 for (const failure of ["structured", "empty", "throws"] as const) {
   test(`settings model discovery falls back after catalog failure (${failure}) and reports its cause`, async () => {
     const { bb, harness } = fixture();

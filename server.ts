@@ -52,8 +52,12 @@ export default async function plugin(bb: BbPluginApi) {
     throw new Error("This prediction provider cannot approve automatically or ask you for approval. Enable 'Allow providers without approval modes' in Settings → Composer predictions to run such helpers unattended.");
   }
   function usablePredictionProvider(provider: Catalog["providers"][number]): boolean {
-    if (config.allowUnattendedHelpers) return provider.available;
-    return provider.available && provider.capabilities.permissionModes.some(mode => mode === "auto" || mode === "accept-edits");
+    // Empty permission-mode lists stay unusable even with the opt-in —
+    // predictionPermissionMode() has nothing to fall back to for them, so
+    // discovery must not offer a model execution would then reject.
+    return provider.available && provider.capabilities.permissionModes.length > 0 &&
+      (config.allowUnattendedHelpers ||
+        provider.capabilities.permissionModes.some(mode => mode === "auto" || mode === "accept-edits"));
   }
   function resolveModel(catalog: Catalog, preferred: ModelSelection): ModelSelection {
     const provider = catalog.providers.find(row => row.id === preferred.providerId);
